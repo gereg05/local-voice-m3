@@ -1,0 +1,6 @@
+rumps
+pynput
+sounddevice
+numpy
+pyperclip
+mlx-whisper
