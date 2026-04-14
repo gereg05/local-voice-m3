@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 import enum
+import gc
+import os
 import queue
 import threading
 
 import numpy as np
 import sounddevice as sd
+
+# Use cached model only — no network calls to Hugging Face
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 SAMPLE_RATE = 16000
 MIN_AUDIO_FRAMES = 8000  # 0.5 seconds at 16kHz
@@ -80,6 +87,7 @@ class DictationWorker:
                 return
 
             audio = np.concatenate(self._audio_chunks).flatten()
+            self._audio_chunks.clear()  # free chunk list immediately
 
             if len(audio) < MIN_AUDIO_FRAMES:
                 return
@@ -89,8 +97,10 @@ class DictationWorker:
         except Exception as e:
             print(f"[worker] error: {e}")
         finally:
+            self._audio_chunks.clear()
             self._state = State.IDLE
             self._recording_event.clear()
+            gc.collect()
 
     def _transcribe(self, audio: np.ndarray) -> None:
         import mlx_whisper
@@ -98,12 +108,18 @@ class DictationWorker:
         lang = self._get_language()
         kwargs: dict = {
             "path_or_hf_repo": MODEL_REPO,
+            "fp16": True,          # half-precision – faster on M3, less RAM
+            "condition_on_previous_text": False,  # skip context window – lower latency
         }
         if lang is not None:
             kwargs["language"] = lang
 
         result = mlx_whisper.transcribe(audio, **kwargs)
         text = result.get("text", "").strip()
+
+        # free transcription tensors before pasting
+        del result, audio
+        gc.collect()
 
         if text:
             self._result_queue.put(text)
