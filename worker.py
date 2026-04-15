@@ -52,6 +52,19 @@ class DictationWorker:
             print(f"[audio] {status}")
         self._audio_chunks.append(indata.copy())
 
+    # --- cleanup (called on app shutdown) ---
+
+    def cleanup(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        self._audio_chunks.clear()
+        self._recording_event.clear()
+
     # --- recording control ---
 
     def start_recording(self) -> None:

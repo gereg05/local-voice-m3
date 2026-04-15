@@ -87,4 +87,16 @@ class DictationApp(rumps.App):
 
 
 if __name__ == "__main__":
-    DictationApp().run()
+    import atexit
+    import signal
+
+    app = DictationApp()
+
+    def _shutdown(*_args) -> None:
+        app._worker.cleanup()
+
+    atexit.register(_shutdown)
+    signal.signal(signal.SIGINT, lambda *_: (_shutdown(), exit(0)))
+    signal.signal(signal.SIGTERM, lambda *_: (_shutdown(), exit(0)))
+
+    app.run()
