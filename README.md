@@ -4,6 +4,8 @@ Globales Diktier-Tool für macOS (Apple Silicon). Halte die **rechte Command-Tas
 
 - Lokale Transkription via **mlx-whisper** (whisper-small) — keine Cloud, keine API-Keys
 - Menübar-App mit Sprachauswahl (Auto/Deutsch/Englisch)
+- Optionales Audio-Feedback beim Starten und Stoppen der Aufnahme
+- Zwischenablage wird nach dem Einfügen wiederhergestellt
 - Modell bleibt im RAM — minimale Latenz nach dem ersten Aufruf
 
 ## Voraussetzungen
@@ -54,8 +56,13 @@ Beim ersten Start werden zwei Berechtigungen benötigt:
 - **Deutsch**: Erzwingt deutsche Transkription
 - **Englisch**: Erzwingt englische Transkription
 
+### Audio-Feedback
+
+Über das Menübar-Icon → **Audio-Feedback** kann der kurze Ton beim Starten
+und Stoppen der Aufnahme ein- oder ausgeschaltet werden.
+
 ## Hinweise
 
 - Der erste Transkriptionsaufruf dauert ~1-2 Sekunden (Modell wird geladen). Danach bleibt das Modell im RAM.
 - Audio kürzer als 0.5 Sekunden wird ignoriert (versehentliche Taps).
-- Das Tool nutzt die Zwischenablage (Cmd+V) zum Einfügen. Der vorherige Inhalt der Zwischenablage wird dabei überschrieben.
+- Das Tool nutzt die Zwischenablage (Cmd+V) zum Einfügen und stellt den vorherigen Inhalt danach wieder her.
