@@ -36,6 +36,7 @@ class DictationApp(rumps.App):
         super().__init__("Dictation", icon=ICON_IDLE, template=True)
 
         self._result_queue: queue.Queue[str] = queue.Queue()
+        self._paste_queue: queue.Queue[str] = queue.Queue()
         self._recording_event = threading.Event()
         self._worker = DictationWorker(self._result_queue, self._recording_event)
         self._keyboard = Controller()
@@ -68,6 +69,9 @@ class DictationApp(rumps.App):
         )
         worker_thread.start()
 
+        paste_thread = threading.Thread(target=self._run_paste_worker, daemon=True)
+        paste_thread.start()
+
     def _on_language_select(self, sender: rumps.MenuItem) -> None:
         for item in self._language_items.values():
             item.state = False
@@ -93,12 +97,23 @@ class DictationApp(rumps.App):
         self._was_recording = is_recording
 
         # check for transcription results
-        try:
-            text = self._result_queue.get_nowait()
-        except queue.Empty:
-            return
+        while True:
+            try:
+                text = self._result_queue.get_nowait()
+            except queue.Empty:
+                return
 
-        self._paste_text(text)
+            self._paste_queue.put(text)
+
+    def _run_paste_worker(self) -> None:
+        while True:
+            text = self._paste_queue.get()
+            try:
+                self._paste_text(text)
+            except Exception as e:
+                print(f"[paste] failed: {e}")
+            finally:
+                self._paste_queue.task_done()
 
     def _paste_text(self, text: str) -> None:
         clipboard_snapshot = self._capture_clipboard()
