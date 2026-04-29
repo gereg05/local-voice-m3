@@ -62,6 +62,7 @@ class DictationWorker:
         self._audio_chunks: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._record_lock = threading.Lock()
+        self._transcribe_lock = threading.Lock()
         self._transcription_id = 0
 
         self._language: str | None = None  # None = auto-detect
@@ -110,17 +111,27 @@ class DictationWorker:
             if self._state is not State.IDLE:
                 return
 
-            self._state = State.RECORDING
             self._audio_chunks.clear()
-            self._recording_event.set()
+            self._recording_event.clear()
 
-            self._stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=1,
-                dtype="float32",
-                callback=self._audio_callback,
-            )
-            self._stream.start()
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                    callback=self._audio_callback,
+                )
+                self._stream.start()
+            except Exception as e:
+                self._close_stream()
+                self._audio_chunks.clear()
+                self._state = State.IDLE
+                self._recording_event.clear()
+                print(f"[worker] could not start recording: {e}")
+                return
+
+            self._state = State.RECORDING
+            self._recording_event.set()
             print("[worker] recording ...")
 
     def stop_recording_and_transcribe(self) -> None:
@@ -129,16 +140,24 @@ class DictationWorker:
             if self._state is not State.RECORDING:
                 return
 
-            self._close_stream()
-            self._state = State.TRANSCRIBING
-            self._recording_event.clear()
+            try:
+                self._close_stream()
+                self._state = State.TRANSCRIBING
+                self._recording_event.clear()
 
-            if not self._audio_chunks:
+                if not self._audio_chunks:
+                    self._state = State.IDLE
+                    return
+
+                audio = np.concatenate(self._audio_chunks).flatten()
+                self._audio_chunks.clear()
+            except Exception as e:
+                self._close_stream()
+                self._audio_chunks.clear()
                 self._state = State.IDLE
+                self._recording_event.clear()
+                print(f"[worker] could not stop recording: {e}")
                 return
-
-            audio = np.concatenate(self._audio_chunks).flatten()
-            self._audio_chunks.clear()
 
         if len(audio) < MIN_AUDIO_FRAMES:
             self._finish_transcription()
@@ -165,11 +184,18 @@ class DictationWorker:
         result_holder = {"text": ""}
 
         def _run() -> None:
+            acquired = False
             try:
+                acquired = self._transcribe_lock.acquire(blocking=False)
+                if not acquired:
+                    print("[worker] transcription engine busy; skipping")
+                    return
                 result_holder["text"] = self._transcribe(audio)
             except Exception as e:
                 print(f"[worker] error: {e}")
             finally:
+                if acquired:
+                    self._transcribe_lock.release()
                 self._finish_transcription(transcription_id)
                 finished.set()
 
@@ -178,7 +204,7 @@ class DictationWorker:
 
         if finished.wait(timeout=TRANSCRIBE_TIMEOUT):
             text = result_holder["text"]
-            if text:
+            if text and self._is_current_transcription(transcription_id):
                 self._result_queue.put(text)
             return
 
@@ -186,15 +212,37 @@ class DictationWorker:
             print("[worker] late transcription discarded")
         else:
             print(f"[worker] TIMEOUT after {TRANSCRIBE_TIMEOUT}s — skipping")
-        # Can't kill the thread. The worker stays in TRANSCRIBING until the
-        # daemon finishes, so no second MLX job starts in parallel.
+        self._timeout_transcription(transcription_id)
 
     def _finish_transcription(self, transcription_id: int | None = None) -> None:
         with self._record_lock:
-            if transcription_id is None or transcription_id == self._transcription_id:
+            if transcription_id is None:
                 self._state = State.IDLE
+            elif (
+                transcription_id == self._transcription_id
+                and self._state is State.TRANSCRIBING
+            ):
+                self._state = State.IDLE
+            if self._state is State.IDLE:
+                self._recording_event.clear()
 
         gc.collect()
+
+    def _timeout_transcription(self, transcription_id: int) -> None:
+        with self._record_lock:
+            if (
+                transcription_id == self._transcription_id
+                and self._state is State.TRANSCRIBING
+            ):
+                self._transcription_id += 1
+                self._state = State.IDLE
+                self._recording_event.clear()
+
+        gc.collect()
+
+    def _is_current_transcription(self, transcription_id: int) -> bool:
+        with self._record_lock:
+            return transcription_id == self._transcription_id
 
     def _transcribe(self, audio: np.ndarray) -> str:
         mx = _get_mlx()
@@ -238,11 +286,23 @@ class DictationWorker:
 
         def on_press(key):
             if key == right_cmd:
-                self.start_recording()
+                try:
+                    self.start_recording()
+                except Exception as e:
+                    print(f"[worker] key press handler failed: {e}")
+                    self.cleanup()
 
         def on_release(key):
             if key == right_cmd:
-                self.stop_recording_and_transcribe()
+                try:
+                    self.stop_recording_and_transcribe()
+                except Exception as e:
+                    print(f"[worker] key release handler failed: {e}")
+                    self.cleanup()
 
-        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            listener.join()
+        try:
+            with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+                listener.join()
+        except Exception as e:
+            print(f"[worker] key listener failed: {e}")
+            self.cleanup()
